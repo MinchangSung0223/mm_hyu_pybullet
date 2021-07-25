@@ -3,12 +3,11 @@ import numpy as np
 np.set_printoptions(formatter={'float_kind': lambda x: "{0:0.5f}".format(x)})
 
 from parameter import *
-
+from func.mr import *
 import time
 import pybullet_data
-import modern_robotics as mr
-from functions import drawplot
-
+from functions import *
+pi = np.pi
 
 
 
@@ -19,42 +18,7 @@ def getJointState(robotId,ArmJoint):
 	qdot =[jointState[0][1],jointState[1][1],jointState[2][1],jointState[3][1],jointState[4][1],jointState[5][1]]
 	return q,qdot
 def MR_setup():
-	def w_p_to_Slist(w,p,ROBOT_DOF):
-		Slist = []
-		for i in range(0,ROBOT_DOF):
-			w_ = w[i];
-			p_ = p[i];			
-			v_ = -np.cross(w_,p_)
-			Slist.append([w_[0],w_[1],w_[2],v_[0],v_[1],v_[2]])
-
-		return np.transpose(Slist)
-
-	def getGlist(inertia, mass, ROBOT_DOF):
-		Glist = []
-		for i in range(0,ROBOT_DOF):
-			tempG = np.eye(6)
-			inertia_ = np.array(inertia[i])
-			for j in range(0,3):
-				for k in range(0,3):
-					tempG[j,k] = inertia_[j,k]
-			for l in range(3,6):
-				tempG[l,l] = mass[i]
-			Glist.append(tempG) 
-		return Glist
-	def getCoM_Mlist(M,p,ROBOT_DOF):
-		Mlist =[]
-		for i in range(0,ROBOT_DOF+1):
-			p_ = p[i]
-			tempM = np.array([[1,0,0,p_[0]],
-				              [0,1,0,p_[1]],
-				              [0,0,1,p_[2]],
-				              [0,0,0,1]])
-			Mlist.append(tempM)
-		ret_Mlist = []
-		ret_Mlist.append(Mlist[0])
-		for i in range(1,ROBOT_DOF+1):
-			ret_Mlist.append(np.matmul(mr.TransInv(Mlist[i-1]),Mlist[i]))
-		return ret_Mlist
+	
 	w = []
 	w.append([0,0,1])
 	w.append([0,1,0])
@@ -119,10 +83,15 @@ def MR_setup():
 
 	CoM_Mlist = getCoM_Mlist(M,CoM,ROBOT_DOF);
 	Glist = getGlist(inertia,mass,ROBOT_DOF)
-	T=mr.FKinSpace(M, Slist, thetalist)	
+	T=FKinSpace(M, Slist, thetalist)	
 	return CoM_Mlist,Glist,Slist
 
 def main():
+	def setTorque(torque):
+		n = 0
+		for j in ArmJoint:
+			p.setJointMotorControl2(robotId, j, p.TORQUE_CONTROL, targetPosition=0, force=torque[n])
+			n = n+1
 
 	MR_setup()
 	p.connect(p.GUI)
@@ -133,7 +102,7 @@ def main():
 	plane= p.loadURDF("urdf/plane/plane.urdf")
 	robotPATH = "urdf/right_sim.urdf"
 	p.setGravity(0, 0, -10)
-	robotId = p.loadURDF(robotPATH,[0,0,0.5], p.getQuaternionFromEuler([0,0,0]))
+	robotId = p.loadURDF(robotPATH,[0,0,0.1], p.getQuaternionFromEuler([0,0,0]))
 	NumberofJoint = p.getNumJoints(robotId)
 	MobileJoint = [0,1,2]
 	ArmJoint = [12,13,14,15,16,17]
@@ -145,29 +114,86 @@ def main():
 	for i in range(0,NumberofJoint):
 		print(p.getJointInfo(robotId,i))
 	dt = 0.001
-	EndTime=2
+	EndTime=1
 
 	Mlist,Glist,Slist = MR_setup();
 	g = np.array([0, 0, -9.8])
 
 
+
+	thetastart = np.array([0,0,0,0,0,0])
+	thetaend = np.array([pi/5,pi/2,pi/5,pi/5,pi/2,pi/2])
+	
+	jt = JointTrajectory(thetastart, thetaend, EndTime, int(EndTime/dt), 5)
+	jvt = JointVelocityTrajectory(thetastart, thetaend, EndTime, int(EndTime/dt), 5)
+	i=0;
+
+	save_dq = []
+	save_q = []
+	save_qdot = []
+	save_dqdot = []
+	save_t =[]
+
+
+	Kp = np.diag([28.7931,32.5279,18.764,23.2564,14.1946,15])
+	Kd = np.diag([0.00575482*Kp[0,0],0.005499895*Kp[1,1],0.0045007*Kp[2,2],0.004599985*Kp[3,3],0.00459971*Kp[4,4],0.00459971*Kp[5,5]])*100
+	Ki = np.diag([20,20,20,20,20,20])*5
+
+	print(Kp)
+	print(Kd)
+	print(Ki)
+
+
+
+	prev_e=0;
+
 	for t in range(0,int(EndTime/dt)):
 		q,qdot = getJointState(robotId,ArmJoint)
-		M = mr.MassMatrix(np.array(q),Mlist,Glist,Slist)
-		G = mr.GravityForces(np.array(q), g, Mlist, Glist, Slist)
-		print(G)
-		n = 0
-		for j in ArmJoint:
-			p.setJointMotorControl2(robotId, j, p.TORQUE_CONTROL, targetPosition=0, force=G[n])
-			n = n+1
+		
+		#dq = jt[i];
+		#dqdot = jvt[i]
+
+
+		dq = np.array([0,0,0,0,0,0]);
+		dqdot =np.array([0,0,0,0,0,0]);
+
+		e = dq -q
+		edot = dqdot-qdot
+		eint = prev_e + e*dt
+		#G = GravityForces(np.array(q), g, Mlist, Glist, Slist)
+		#C = VelQuadraticForces(np.array(q),np.array(qdot), Mlist, Glist, Slist)
+		#M = MassMatrix(np.array(q),Mlist,Glist,Slist)
+
+		#u =np.dot(M, \
+        #          Kp.dot(e) + Ki.dot(np.array(eint) + e) \
+        #          + Kd.dot(np.subtract(np.array(dqdot), np.array(dq))))+C.dot(dq)+G 
+		u = np.dot(MassMatrix(np.array(q), Mlist, Glist, Slist), Kp.dot(e) + Ki.dot(np.array(eint) + e) + Kd.dot(edot))
+		+ InverseDynamics(np.array(q), np.array(dq), np.array([0,0,0,0,0,0]), g, [0, 0, 0, 0, 0, 0], Mlist, Glist, Slist)
+		prev_e = e;
+
+
+
+		save_t.append(t*dt)
+		save_dq.append(dq)
+		save_q.append(q)
+		save_dqdot.append(dqdot)
+		save_qdot.append(qdot)
+		
+		setTorque(u)
+
+
+
+
 
 		p.stepSimulation()
+		i=i+1;
 		time.sleep(dt)
 
 
-	t = np.arange(0.0, 2.0, 0.01)
-	s = 1 + np.sin(2 * np.pi * t)
-	drawplot(t,s,"title","Time","Value")
+
+
+	drawqplot(save_t,np.array(save_q),np.array(save_dq),"q","Time","Value",6)
+	drawqplot(save_t,np.array(save_qdot),np.array(save_dqdot),"qdot","Time","Value",6)
 
 if __name__ == "__main__":
     # execute only if run as a script
